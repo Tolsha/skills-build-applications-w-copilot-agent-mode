@@ -4,6 +4,7 @@
         "true": true,
         "mongosh": true,
         "cnt": true,
-        "npm run seed": true
+        "npm run seed": true,
+        "npm run dev": true
     }
 }
