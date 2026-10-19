@@ -29,16 +29,62 @@ export async function listTeams() {
   return Team.find().lean();
 }
 
-export async function createTeam(_input: unknown) {
-  throw Object.assign(new Error('Team validation is not implemented yet'), { status: 501 });
+export async function createTeam(input: unknown) {
+  const { name, mascot, members = [] } = (input ?? {}) as Record<string, unknown>;
+  if (typeof name !== 'string' || !name.trim()) throw httpError(400, 'name is required');
+  if (typeof mascot !== 'string' || !mascot.trim()) throw httpError(400, 'mascot is required');
+  if (!Array.isArray(members) || !members.every((id) => typeof id === 'string' && OBJECT_ID_PATTERN.test(id))) {
+    throw httpError(400, 'members must be a list of valid ids');
+  }
+  const team = await Team.create({ name, mascot, members });
+  return team.toObject();
 }
 
 export async function getLeaderboard() {
-  return [];
+  const totals = await Activity.aggregate<{ _id: unknown; totalPoints: number }>([
+    { $group: { _id: '$team', totalPoints: { $sum: '$points' } } },
+  ]);
+  const pointsByTeam = new Map(totals.map(({ _id, totalPoints }) => [String(_id), totalPoints]));
+  const teams = await Team.find().lean();
+  return teams
+    .map((team) => ({ teamId: team._id, teamName: team.name, totalPoints: pointsByTeam.get(String(team._id)) ?? 0 }))
+    .sort((a, b) => b.totalPoints - a.totalPoints || a.teamName.localeCompare(b.teamName))
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
 }
 
-export async function suggestWorkouts(_userEmail: string) {
-  return Workout.find().limit(1).lean();
+const ACTIVITY_FOCUS: Record<string, string> = {
+  run: 'endurance',
+  cycle: 'endurance',
+  walk: 'endurance',
+  swim: 'endurance',
+  row: 'endurance',
+  strength: 'strength',
+  lift: 'strength',
+  stretch: 'mobility',
+  yoga: 'mobility',
+};
+
+export async function suggestWorkouts(userEmail: string) {
+  const user = await User.findOne({ email: userEmail.trim().toLowerCase() }).lean();
+  if (!user) throw httpError(404, 'User not found');
+
+  const recent = await Activity.find({ user: user._id }).sort({ occurredAt: -1 }).limit(5).lean();
+  const minutesByType = new Map<string, number>();
+  for (const activity of recent) minutesByType.set(activity.type, (minutesByType.get(activity.type) ?? 0) + activity.minutes);
+  const [topType] = [...minutesByType.entries()].sort((a, b) => b[1] - a[1])[0] ?? [];
+  const activityFocus = topType ? (ACTIVITY_FOCUS[topType] ?? topType) : undefined;
+
+  const rank = (focus: string) => (focus === activityFocus ? 0 : focus === user.fitnessGoal ? 1 : 2);
+  const workouts = (await Workout.find().lean()).sort((a, b) => rank(a.focus) - rank(b.focus));
+  return workouts.slice(0, 3).map((workout) => ({
+    ...workout,
+    reason:
+      workout.focus === activityFocus
+        ? `Matches your recent ${topType} activity`
+        : workout.focus === user.fitnessGoal
+          ? `Supports your ${user.fitnessGoal} goal`
+          : 'Adds variety to your routine',
+  }));
 }
 
 export { User };
